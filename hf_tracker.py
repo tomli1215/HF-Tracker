@@ -7,6 +7,8 @@ import json
 import time
 import logging
 import asyncio
+import queue
+import threading
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -200,8 +202,9 @@ class HFTracker:
     
     def _send_telegram_notification(self, message: str):
         """Send a notification to Telegram channel."""
-        if not self.telegram_bot:
-            logger.warning("Telegram bot not initialized. Skipping notification.")
+        bot_token = self.telegram_config.get("bot_token")
+        if not bot_token or bot_token == "YOUR_TELEGRAM_BOT_TOKEN":
+            logger.warning("Telegram bot token not configured. Skipping notification.")
             return
         
         channel_id = self.telegram_config.get("channel_id")
@@ -214,32 +217,52 @@ class HFTracker:
             if isinstance(channel_id, int) or (isinstance(channel_id, str) and channel_id.lstrip('-').isdigit()):
                 channel_id = int(channel_id)
             
-            # Run async send_message in a new event loop
-            # Since we're in a synchronous context, asyncio.run() should work fine
-            asyncio.run(self._async_send_message(channel_id, message))
-        except RuntimeError as e:
-            # If there's already an event loop running, use a different approach
-            logger.warning(f"Event loop issue: {e}. Trying alternative method...")
-            import threading
+            # Always use threading approach to avoid event loop conflicts
+            # Create a new Bot instance in each thread with its own event loop
+            result_queue = queue.Queue()
+            
             def run_in_thread():
+                """Run async send in a new thread with its own event loop."""
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
+                bot = None
                 try:
-                    new_loop.run_until_complete(self._async_send_message(channel_id, message))
+                    # Create a new Bot instance in this thread's event loop
+                    bot = Bot(token=bot_token)
+                    new_loop.run_until_complete(self._async_send_message(bot, channel_id, message))
+                    result_queue.put(True)
+                except Exception as e:
+                    result_queue.put(e)
                 finally:
+                    # Clean up
+                    if bot:
+                        try:
+                            new_loop.run_until_complete(bot.close())
+                        except:
+                            pass
                     new_loop.close()
-            thread = threading.Thread(target=run_in_thread)
+            
+            thread = threading.Thread(target=run_in_thread, daemon=False)
             thread.start()
-            thread.join()
+            thread.join(timeout=30)  # 30 second timeout
+            
+            if thread.is_alive():
+                logger.error("Telegram notification timed out")
+            else:
+                result = result_queue.get_nowait() if not result_queue.empty() else None
+                if isinstance(result, Exception):
+                    raise result
+        except queue.Empty:
+            logger.error("Telegram notification failed: no result returned")
         except TelegramError as e:
             logger.error(f"Failed to send Telegram notification: {e}")
         except Exception as e:
             logger.error(f"Unexpected error sending Telegram notification: {e}")
     
-    async def _async_send_message(self, channel_id: int, message: str):
+    async def _async_send_message(self, bot: Bot, channel_id: int, message: str):
         """Async helper to send Telegram message."""
         try:
-            await self.telegram_bot.send_message(
+            await bot.send_message(
                 chat_id=channel_id,
                 text=message,
                 parse_mode='HTML'
