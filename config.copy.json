@@ -1,0 +1,13 @@
+{
+  "hf_users": [
+    "USER1",
+    "USER2"
+  ],
+  "telegram": {
+    "bot_token": "YOUR_BOT_TOKEN_HERE",
+    "channel_id": "YOUR_CHANNEL_ID_HERE"
+  },
+  "check_interval_minutes": 2,
+  "state_file": "tracker_state.json"
+}
+
