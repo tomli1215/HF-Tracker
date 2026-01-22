@@ -249,6 +249,18 @@ class HFTracker:
             logger.error(f"Error in async send_message: {e}")
             raise
     
+    def _format_date(self, date_str: Optional[str]) -> str:
+        """Format ISO date string to a readable format."""
+        if not date_str:
+            return "Unknown"
+        try:
+            # Parse ISO format date
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            # Format as readable date
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            return date_str
+    
     def _format_update_message(self, update: Dict) -> str:
         """Format an update into a readable message."""
         update_type = update.get("type")
@@ -257,6 +269,7 @@ class HFTracker:
         model_info = update.get("model_info", {})
         
         model_url = f"https://huggingface.co/{model_id}"
+        last_modified = self._format_date(model_info.get('last_modified'))
         
         if update_type == "new_model":
             tags = model_info.get("tags", [])
@@ -268,6 +281,7 @@ class HFTracker:
                 f"📦 Model: <b>{model_id}</b>\n"
                 f"🏷️ Tags: {tags_str}\n"
                 f"📥 Downloads: {model_info.get('downloads', 0):,}\n"
+                f"📅 Last Modified: {last_modified}\n"
                 f"🔗 <a href='{model_url}'>View on Hugging Face</a>"
             )
         elif update_type == "model_updated":
@@ -275,7 +289,7 @@ class HFTracker:
                 f"🔄 <b>Model Updated!</b>\n\n"
                 f"👤 User: <b>{username}</b>\n"
                 f"📦 Model: <b>{model_id}</b>\n"
-                f"📅 Last Modified: {model_info.get('last_modified', 'Unknown')}\n"
+                f"📅 Last Modified: {last_modified}\n"
                 f"🔗 <a href='{model_url}'>View on Hugging Face</a>"
             )
         else:
@@ -301,7 +315,21 @@ class HFTracker:
         # Send notifications for all updates
         if all_updates:
             logger.info(f"Found {len(all_updates)} updates. Sending notifications...")
-            for update in all_updates:
+            # Sort updates so latest (most recent last_modified) appears at the end
+            def get_sort_key(update):
+                model_info = update.get("model_info", {})
+                last_modified = model_info.get("last_modified")
+                if last_modified:
+                    try:
+                        dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                        return dt.timestamp()
+                    except Exception:
+                        return 0
+                return 0
+            
+            sorted_updates = sorted(all_updates, key=get_sort_key)
+            
+            for update in sorted_updates:
                 message = self._format_update_message(update)
                 self._send_telegram_notification(message)
                 # Small delay between notifications to avoid rate limiting
